@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  api:
+    name: api — lint, typecheck, build, test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: earth365
+          POSTGRES_PASSWORD: earth365_dev_password
+          POSTGRES_DB: earth365
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U earth365 -d earth365"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://earth365:earth365_dev_password@localhost:5432/earth365?schema=public
+      REDIS_URL: redis://localhost:6379
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Generate Prisma client
+        run: npm -w @earth365/api run prisma:generate
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Lint
+        run: npm -w @earth365/api run lint
+
+      - name: Type-check shared-types
+        run: npm -w @earth365/shared-types run typecheck
+
+      - name: Type-check api
+        run: npm -w @earth365/api run typecheck
+
+      - name: Test
+        run: npm -w @earth365/api run test
+
+      - name: Build api
+        run: npm -w @earth365/api run build
+
+      - name: Build shared-types
+        run: npm -w @earth365/shared-types run build

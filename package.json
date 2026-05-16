@@ -1,0 +1,29 @@
+{
+  "name": "earth-365",
+  "version": "0.0.1",
+  "private": true,
+  "description": "EARTH-365 — a persistent online virtual-life game. Monorepo containing the Node.js backend (NestJS), shared TypeScript types, and a Unity client.",
+  "workspaces": [
+    "apps/api",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm -ws --if-present run build",
+    "lint": "npm -ws --if-present run lint",
+    "typecheck": "npm -ws --if-present run typecheck",
+    "test": "npm -ws --if-present run test",
+    "format": "prettier --write \"apps/**/*.{ts,js,json,md}\" \"packages/**/*.{ts,js,json,md}\"",
+    "format:check": "prettier --check \"apps/**/*.{ts,js,json,md}\" \"packages/**/*.{ts,js,json,md}\"",
+    "dev:api": "npm -w @earth365/api run dev",
+    "db:up": "docker compose up -d postgres redis",
+    "db:down": "docker compose down"
+  },
+  "devDependencies": {
+    "prettier": "3.3.3",
+    "typescript": "5.5.4"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  }
+}
