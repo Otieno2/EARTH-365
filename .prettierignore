@@ -1,0 +1,8 @@
+node_modules/
+dist/
+build/
+coverage/
+apps/client-unity/
+.next/
+*.log
+package-lock.json

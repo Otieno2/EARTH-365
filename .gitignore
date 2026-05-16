@@ -1,0 +1,73 @@
+# Dependencies
+node_modules/
+.pnp.*
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Test output
+coverage/
+.nyc_output/
+
+# Environment
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Editors / IDEs
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Unity
+apps/client-unity/Library/
+apps/client-unity/Temp/
+apps/client-unity/Obj/
+apps/client-unity/Build/
+apps/client-unity/Builds/
+apps/client-unity/Logs/
+apps/client-unity/UserSettings/
+apps/client-unity/MemoryCaptures/
+apps/client-unity/*.csproj
+apps/client-unity/*.unityproj
+apps/client-unity/*.sln
+apps/client-unity/*.suo
+apps/client-unity/*.tmp
+apps/client-unity/*.user
+apps/client-unity/*.userprefs
+apps/client-unity/*.pidb
+apps/client-unity/*.booproj
+apps/client-unity/*.svd
+apps/client-unity/*.pdb
+apps/client-unity/*.mdb
+apps/client-unity/*.opendb
+apps/client-unity/*.VC.db
+apps/client-unity/*.apk
+apps/client-unity/*.aab
+apps/client-unity/*.unitypackage
+apps/client-unity/*.app
+apps/client-unity/sysinfo.txt
+apps/client-unity/crashlytics-build.properties
+apps/client-unity/Assets/AssetStoreTools*
+apps/client-unity/Assets/Plugins/Editor/JetBrains*
+
+# Prisma
+apps/api/prisma/migrations/dev.db*
+
+# Misc
+*.tgz
+.cache/
