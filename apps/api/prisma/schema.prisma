@@ -1,0 +1,503 @@
+// EARTH-365 — Prisma schema
+//
+// This is the source of truth for the backend data model. Every authoritative
+// piece of player state (accounts, plots, currency, corporations, transactions)
+// lives in Postgres.
+//
+// Naming conventions:
+//   - Singular table names (User, Plot, ...) per Prisma convention.
+//   - UUIDs for all primary keys (string column, default cuid()).
+//   - Monetary amounts are stored as integers ("base units"). EarthCoin is
+//     tracked in "coins". Gems are tracked in "gems". The smallest spendable
+//     unit is 1 — there are no fractional balances.
+//   - `createdAt` / `updatedAt` on every table that mutates.
+//
+// Phase 1 (Arrival) uses: User, Character, Plot, Corporation, CorporationMember,
+// CurrencyBalance, LedgerEntry, InventoryItem, CatalogItem, ChatMessage.
+//
+// Phase 2 (Frontier) adds: TaxRecord, AuctionListing, BlueprintAsset.
+//
+// Phase 3 (Empires) adds: MarketplaceListing, MarketplaceSale, City, District,
+//   CityElection, CorporationDistrictControl.
+//
+// Defining the Phase 2/3 tables up-front is a deliberate choice to avoid
+// painful migrations down the line.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Accounts & identity
+// ---------------------------------------------------------------------------
+
+enum AuthProvider {
+  EMAIL
+  GOOGLE
+  APPLE
+}
+
+model User {
+  id           String       @id @default(cuid())
+  email        String       @unique
+  displayName  String
+  provider     AuthProvider @default(EMAIL)
+  providerId   String?      @unique
+  passwordHash String?
+  isBanned     Boolean      @default(false)
+  banReason    String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  lastSeenAt   DateTime?
+
+  characters             Character[]
+  currencyBalance        CurrencyBalance?
+  ownedPlots             Plot[]                @relation("PlotOwner")
+  ledgerEntries          LedgerEntry[]
+  ownedCorporations      Corporation[]         @relation("CorporationFounder")
+  corporationMemberships CorporationMember[]
+  inventoryItems         InventoryItem[]
+  marketplaceListings    MarketplaceListing[]  @relation("ListingSeller")
+  blueprintAssets        BlueprintAsset[]
+  chatMessages           ChatMessage[]
+  reportsFiled           PlayerReport[]        @relation("ReportReporter")
+  reportsAgainst         PlayerReport[]        @relation("ReportReported")
+
+  @@index([provider, providerId])
+}
+
+model Character {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String   @unique
+  appearance Json    // serialized customization (face, hair, body, etc)
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Currency
+// ---------------------------------------------------------------------------
+
+model CurrencyBalance {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  earthCoin BigInt   @default(0)
+  gems      BigInt   @default(0)
+  updatedAt DateTime @updatedAt
+}
+
+enum LedgerEntryType {
+  // Currency origination / sinks
+  STARTER_GRANT
+  GEMS_PURCHASE         // real money in → Gems
+  JOB_PAYOUT
+  DAILY_LOGIN
+  // Plot economy
+  PLOT_PURCHASE
+  PLOT_SALE
+  PROPERTY_TAX
+  AUCTION_BID
+  AUCTION_REFUND
+  // Cosmetics / shop
+  CATALOG_PURCHASE
+  // Marketplace
+  MARKETPLACE_PURCHASE
+  MARKETPLACE_PAYOUT
+  MARKETPLACE_FEE
+  CITY_TAX
+  CORP_CONTROL_CUT
+  // Corporations
+  CORP_REGISTRATION
+  CORP_DEPOSIT
+  CORP_WITHDRAWAL
+  // Misc
+  ADMIN_ADJUSTMENT
+}
+
+enum Currency {
+  EARTH_COIN
+  GEMS
+}
+
+model LedgerEntry {
+  id        String          @id @default(cuid())
+  userId    String?
+  user      User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+  type      LedgerEntryType
+  currency  Currency
+  amount    BigInt          // signed: positive = credit to user, negative = debit
+  reference String?         // free-form id of related entity (plotId, listingId, etc)
+  metadata  Json?
+  createdAt DateTime        @default(now())
+
+  @@index([userId, createdAt])
+  @@index([type])
+  @@index([reference])
+}
+
+// ---------------------------------------------------------------------------
+// Land & real estate
+// ---------------------------------------------------------------------------
+
+enum PlotTier {
+  RAW_RESIDENTIAL
+  RAW_COMMERCIAL
+  PRIME
+  INDUSTRIAL
+  SCENIC
+  CORPORATE_HQ
+}
+
+enum PlotStatus {
+  AVAILABLE          // owned by no one, buyable
+  OWNED
+  DELINQUENT         // owner failed property tax, headed to auction
+  ON_AUCTION
+  PLATFORM_RESERVED  // dev-held, never for sale
+}
+
+model Plot {
+  id          String     @id @default(cuid())
+  // Spatial: districts are tiles, plots live inside them.
+  districtId  String
+  district    District   @relation(fields: [districtId], references: [id])
+  // Grid coords inside the world (canonical).
+  gridX       Int
+  gridY       Int
+  width       Int        @default(1)
+  height      Int        @default(1)
+  tier        PlotTier
+  status      PlotStatus @default(AVAILABLE)
+  basePrice   BigInt     // in EarthCoin (or Gems for PRIME / SCENIC, see currencyForBase)
+  basePriceCurrency Currency @default(EARTH_COIN)
+  ownerId     String?
+  owner       User?      @relation("PlotOwner", fields: [ownerId], references: [id])
+  ownedSince  DateTime?
+  taxPaidUntil DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  taxRecords     TaxRecord[]
+  auctions       AuctionListing[]
+  blueprints     BlueprintAsset[]
+
+  @@unique([districtId, gridX, gridY])
+  @@index([status])
+  @@index([ownerId])
+  @@index([tier])
+}
+
+// ---------------------------------------------------------------------------
+// Cities & districts (Phase 3 governance, scaffolded now to avoid migrations)
+// ---------------------------------------------------------------------------
+
+model City {
+  id          String     @id @default(cuid())
+  name        String     @unique
+  isCapital   Boolean    @default(false)
+  treasuryCoin BigInt    @default(0)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  districts   District[]
+}
+
+model District {
+  id          String   @id @default(cuid())
+  cityId      String
+  city        City     @relation(fields: [cityId], references: [id])
+  name        String
+  // Phase 3: controlling corporation earns a transaction-fee cut from this district.
+  controllingCorporationId String?
+  controllingCorporation   Corporation? @relation("DistrictController", fields: [controllingCorporationId], references: [id])
+  cityTaxBps   Int      @default(500)  // 5.00%
+  corpCutBps   Int      @default(200)  // 2.00%
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  plots        Plot[]
+
+  @@unique([cityId, name])
+}
+
+// ---------------------------------------------------------------------------
+// Property tax & auction reclamation
+// ---------------------------------------------------------------------------
+
+model TaxRecord {
+  id          String   @id @default(cuid())
+  plotId      String
+  plot        Plot     @relation(fields: [plotId], references: [id], onDelete: Cascade)
+  weekStart   DateTime
+  amount      BigInt
+  paidAt      DateTime?
+  delinquent  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@unique([plotId, weekStart])
+  @@index([delinquent])
+}
+
+enum AuctionStatus {
+  OPEN
+  CLOSED
+  CANCELLED
+}
+
+model AuctionListing {
+  id          String        @id @default(cuid())
+  plotId      String
+  plot        Plot          @relation(fields: [plotId], references: [id], onDelete: Cascade)
+  reason      String        // "DELINQUENT_RECLAIM" | "PREMIUM_DROP" | etc
+  currency    Currency
+  startPrice  BigInt
+  currentBid  BigInt?
+  currentBidderUserId String?
+  endsAt      DateTime
+  status      AuctionStatus @default(OPEN)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([status, endsAt])
+}
+
+// ---------------------------------------------------------------------------
+// Corporations (clans)
+// ---------------------------------------------------------------------------
+
+enum CorporationRank {
+  CEO
+  EXEC
+  MANAGER
+  MEMBER
+}
+
+model Corporation {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  tag         String   @unique   // short display tag e.g. "[OTIE]"
+  logoUrl     String?
+  bannerUrl   String?
+  founderId   String
+  founder     User     @relation("CorporationFounder", fields: [founderId], references: [id])
+  treasuryCoin BigInt  @default(0)
+  treasuryGems BigInt  @default(0)
+  bylaws      Json?    // serialized rules for profit share, voting, etc
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members              CorporationMember[]
+  controlledDistricts  District[]          @relation("DistrictController")
+
+  @@index([founderId])
+}
+
+model CorporationMember {
+  id            String          @id @default(cuid())
+  corporationId String
+  corporation   Corporation     @relation(fields: [corporationId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rank          CorporationRank @default(MEMBER)
+  joinedAt      DateTime        @default(now())
+
+  @@unique([corporationId, userId])
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Catalog & inventory
+// ---------------------------------------------------------------------------
+
+enum ItemCategory {
+  CLOTHING_HEAD
+  CLOTHING_HAIR
+  CLOTHING_TOP
+  CLOTHING_BOTTOM
+  CLOTHING_SHOES
+  CLOTHING_ACCESSORY
+  CLOTHING_FULL_BODY
+  FURNITURE
+  VEHICLE
+  VEHICLE_SKIN
+  BUILDING_MATERIAL
+  EMOTE
+  BLUEPRINT
+}
+
+enum ItemRarity {
+  COMMON
+  UNCOMMON
+  RARE
+  EPIC
+  LIMITED
+}
+
+model CatalogItem {
+  id          String       @id @default(cuid())
+  sku         String       @unique
+  name        String
+  category    ItemCategory
+  rarity      ItemRarity   @default(COMMON)
+  priceCoin   BigInt?      // null = not buyable for soft currency
+  priceGems   BigInt?      // null = not buyable for hard currency
+  isActive    Boolean      @default(true)
+  thumbnailUrl String?
+  metadata    Json?        // texture/model references etc
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  inventoryItems InventoryItem[]
+  marketplaceListings MarketplaceListing[]
+
+  @@index([category, isActive])
+}
+
+model InventoryItem {
+  id            String      @id @default(cuid())
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  catalogItemId String
+  catalogItem   CatalogItem @relation(fields: [catalogItemId], references: [id])
+  quantity      Int         @default(1)
+  acquiredAt    DateTime    @default(now())
+
+  @@unique([userId, catalogItemId])
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Marketplace (Phase 3 — defined now to avoid migrations later)
+// ---------------------------------------------------------------------------
+
+enum ListingStatus {
+  ACTIVE
+  SOLD
+  CANCELLED
+  EXPIRED
+}
+
+model MarketplaceListing {
+  id            String        @id @default(cuid())
+  sellerId      String
+  seller        User          @relation("ListingSeller", fields: [sellerId], references: [id], onDelete: Cascade)
+  catalogItemId String?
+  catalogItem   CatalogItem?  @relation(fields: [catalogItemId], references: [id])
+  // Either a catalog item OR a blueprint OR a plot can be listed.
+  blueprintAssetId String?
+  blueprintAsset   BlueprintAsset? @relation(fields: [blueprintAssetId], references: [id])
+  plotId        String?       // for real-estate resales (Phase 2+)
+  currency      Currency
+  price         BigInt
+  status        ListingStatus @default(ACTIVE)
+  // Cached districtId for routing the 2% controlling-corp cut on sale.
+  districtId    String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([sellerId, status])
+  @@index([status, createdAt])
+  @@index([districtId])
+}
+
+// ---------------------------------------------------------------------------
+// Player-created building blueprints
+// ---------------------------------------------------------------------------
+
+model BlueprintAsset {
+  id          String   @id @default(cuid())
+  authorId    String
+  author      User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  // Serialized building data (walls, floors, furniture placements, etc).
+  // Server validates against schema before save.
+  data        Json
+  thumbnailUrl String?
+  isPublic    Boolean  @default(false)
+  // Optional plot this blueprint was authored from (for screenshots, attribution).
+  sourcePlotId String?
+  sourcePlot   Plot?   @relation(fields: [sourcePlotId], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  marketplaceListings MarketplaceListing[]
+
+  @@index([authorId])
+}
+
+// ---------------------------------------------------------------------------
+// Chat (only persisted for moderation; live chat goes through Redis pub/sub).
+// ---------------------------------------------------------------------------
+
+enum ChatChannel {
+  GLOBAL
+  CORP
+  CITY
+  PROXIMITY
+  DIRECT
+}
+
+model ChatMessage {
+  id        String      @id @default(cuid())
+  senderId  String
+  sender    User        @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  channel   ChatChannel
+  // Channel-specific target (corp id, city id, recipient user id).
+  target    String?
+  body      String      @db.VarChar(500)
+  createdAt DateTime    @default(now())
+  // Moderation: flagged messages don't auto-delete; mods review later.
+  flagged   Boolean     @default(false)
+  flagReason String?
+
+  @@index([channel, target, createdAt])
+  @@index([flagged])
+}
+
+// ---------------------------------------------------------------------------
+// Moderation
+// ---------------------------------------------------------------------------
+
+enum ReportReason {
+  HARASSMENT
+  HATE_SPEECH
+  CHEATING
+  SCAM
+  SEXUAL_CONTENT
+  OTHER
+}
+
+enum ReportStatus {
+  OPEN
+  REVIEWING
+  RESOLVED_ACTION_TAKEN
+  RESOLVED_NO_ACTION
+}
+
+model PlayerReport {
+  id          String       @id @default(cuid())
+  reporterId  String
+  reporter    User         @relation("ReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedId  String
+  reported    User         @relation("ReportReported", fields: [reportedId], references: [id], onDelete: Cascade)
+  reason      ReportReason
+  details     String?      @db.VarChar(1000)
+  status      ReportStatus @default(OPEN)
+  createdAt   DateTime     @default(now())
+  resolvedAt  DateTime?
+
+  @@index([status])
+  @@index([reportedId])
+}
